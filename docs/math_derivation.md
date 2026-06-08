@@ -1,0 +1,251 @@
+# Mathematical Derivation — Regime-Switching Optimal Market Making
+
+This document derives everything from first principles: state dynamics, the value function,
+the HJB PDE, the optimal spread formulas, and the Wonham HMM filter.
+
+---
+
+## 1. Setup and State Variables
+
+We work on a filtered probability space (Ω, F, {F_t}, P).
+
+**State at time t:**
+- `x_t` — cash (wealth from completed trades)
+- `q_t` — inventory (shares held; can be negative)
+- `S_t` — mid-price of the asset
+- `k_t ∈ {1, 2}` — current volatility regime (hidden in Phase 4)
+
+**Total wealth:** `W_t = x_t + q_t · S_t`
+
+---
+
+## 2. Mid-Price Dynamics
+
+The mid-price follows a regime-switching arithmetic Brownian motion:
+
+```
+dS_t = σ_{k_t} dW_t
+```
+
+where:
+- `W_t` is a standard Brownian motion
+- `σ_k` is the volatility in regime k (σ₁ < σ₂)
+- No drift: at the intraday timescale (seconds to minutes) drift is negligible vs volatility
+
+---
+
+## 3. Regime Dynamics
+
+`k_t` is a continuous-time Markov chain on {1, 2} with generator matrix:
+
+```
+Q = [ -q₁₂   q₁₂ ]
+    [  q₂₁  -q₂₁ ]
+```
+
+Transition probabilities over dt:
+```
+P(k_{t+dt} = 2 | k_t = 1) = q₁₂ · dt + o(dt)
+P(k_{t+dt} = 1 | k_t = 2) = q₂₁ · dt + o(dt)
+```
+
+Stationary distribution:
+```
+π₁* = q₂₁ / (q₁₂ + q₂₁)
+π₂* = q₁₂ / (q₁₂ + q₂₁)
+```
+
+---
+
+## 4. Order Flow Model
+
+The market maker posts bid at `S_t − δᵇ` and ask at `S_t + δᵃ`.
+
+Market orders arrive as regime-dependent Poisson processes:
+```
+Ask hit rate: λᵃ_k(δᵃ) = A_k · exp(−κ · δᵃ)
+Bid hit rate: λᵇ_k(δᵇ) = A_k · exp(−κ · δᵇ)
+```
+
+When ask is hit: `x → x + (S_t + δᵃ)`,  `q → q − 1`
+When bid is hit: `x → x − (S_t − δᵇ)`,  `q → q + 1`
+
+---
+
+## 5. Objective Function
+
+The market maker maximises expected terminal wealth minus a terminal inventory penalty:
+
+```
+J(x, q, S, t, k) = E[ x_T + q_T · S_T − (φ/2) · q_T²  |  x_t=x, q_t=q, S_t=S, k_t=k ]
+```
+
+The term `(φ/2)q_T²` penalises holding a large position at end of day.
+
+---
+
+## 6. Value Function
+
+Define the value function as the supremum of J over all admissible controls:
+
+```
+Vᵏ(x, q, S, t) = sup_{δᵃ, δᵇ} J(x, q, S, t, k)
+```
+
+**Terminal condition:**
+```
+Vᵏ(x, q, S, T) = x + qS − (φ/2)q²    for k ∈ {1, 2}
+```
+
+---
+
+## 7. Deriving the Coupled HJB System
+
+Apply Itô's lemma to Vᵏ(x_t, q_t, S_t, t) over [t, t+dt].
+
+**From the Brownian motion of S:**
+```
+dVᵏ|_diffusion = (∂Vᵏ/∂t) dt + (∂Vᵏ/∂S) dS_t + ½(∂²Vᵏ/∂S²)(dS_t)²
+              = (∂Vᵏ/∂t) dt + σₖ(∂Vᵏ/∂S) dW_t + ½σₖ²(∂²Vᵏ/∂S²) dt
+```
+
+**From an ask being hit (Poisson jump, rate λᵃ):**
+```
+Jump contribution = λᵃ_k(δᵃ) · [Vᵏ(x + S + δᵃ, q−1, S, t) − Vᵏ(x, q, S, t)] dt
+```
+
+**From a bid being hit (Poisson jump, rate λᵇ):**
+```
+Jump contribution = λᵇ_k(δᵇ) · [Vᵏ(x − S + δᵇ, q+1, S, t) − Vᵏ(x, q, S, t)] dt
+```
+
+**From the regime switching (Markov chain jump):**
+```
+Regime contribution = Σⱼ≠ₖ qₖⱼ · [Vʲ(x, q, S, t) − Vᵏ(x, q, S, t)] dt
+```
+
+By the principle of optimality (Bellman), the total expected change in V must be zero
+under the optimal policy. Setting the drift of V to zero:
+
+```
+∂Vᵏ/∂t + ½σₖ² ∂²Vᵏ/∂S²
+  + max_{δᵃ} { λᵏᵃ(δᵃ) · [Vᵏ(x+S+δᵃ, q−1, S, t) − Vᵏ] }
+  + max_{δᵇ} { λᵏᵇ(δᵇ) · [Vᵏ(x−S+δᵇ, q+1, S, t) − Vᵏ] }
+  + Σⱼ≠ₖ qₖⱼ · (Vʲ − Vᵏ)  =  0
+```
+
+This is a **system of two coupled PDEs** — coupled via the last line.
+
+---
+
+## 8. Solving the Ask Optimisation (First-Order Condition)
+
+For the ask term, maximise over δᵃ:
+```
+f(δᵃ) = A_k · exp(−κδᵃ) · [Vᵏ(x+S+δᵃ, q−1, S, t) − Vᵏ]
+```
+
+Let ΔVᵃ = Vᵏ(x+S+δᵃ, q−1, S, t) − Vᵏ(x, q, S, t).
+
+At the margin, ΔVᵃ ≈ (∂Vᵏ/∂x)·δᵃ + constant. Taking df/dδᵃ = 0:
+
+```
+−κ · A_k · exp(−κδᵃ) · ΔVᵃ + A_k · exp(−κδᵃ) · (∂Vᵏ/∂x) = 0
+⟹ δᵃ* = (1/κ) − ΔVᵃ / (∂Vᵏ/∂x) · (1/κ)
+```
+
+After the ansatz substitution (see Section 9), this simplifies to the closed form.
+
+---
+
+## 9. Change of Variables (Ansatz)
+
+Assume:
+```
+Vᵏ(x, q, S, t) = x + q·S − γ·q²·σₖ²·(T−t)/2 + hᵏ(q, t)
+```
+
+The `x + qS` part is current wealth. The second term is the inventory penalty accumulated
+from now to T (assuming regime k persists — the coupling corrects for regime changes).
+`hᵏ(q,t)` captures residual value from optimal trading.
+
+Substituting into the HJB and simplifying (the S terms cancel by construction):
+
+```
+∂hᵏ/∂t − γσₖ²q²/2
+  + max_{δᵃ} { A_k·e^{−κδᵃ} · [hᵏ(q−1,t) − hᵏ(q,t) + δᵃ − γσₖ²q(T−t)] }
+  + max_{δᵇ} { A_k·e^{−κδᵇ} · [hᵏ(q+1,t) − hᵏ(q,t) + δᵇ + γσₖ²q(T−t)] }
+  + Σⱼ≠ₖ qₖⱼ·(hʲ − hᵏ)  =  0
+```
+
+---
+
+## 10. Optimal Spreads (Closed Form Approximation)
+
+Taking first-order conditions on δᵃ and δᵇ:
+
+```
+δᵏ·ᵃ* = (1/κ) + [hᵏ(q,t) − hᵏ(q−1,t)] + γσₖ²q(T−t)
+δᵏ·ᵇ* = (1/κ) − [hᵏ(q,t) − hᵏ(q+1,t)] − γσₖ²q(T−t)
+```
+
+For the unconstrained case (no inventory limits, single regime), this reduces to:
+
+```
+δ* = 1/κ  +  γσ²(T−t)/2
+```
+
+The **reservation price** (the MM quotes symmetrically around it):
+```
+r = S − q · γ · σ² · (T−t)
+```
+
+Total spread = `2/κ + γσ²(T−t)`
+
+---
+
+## 11. Wonham HMM Filter
+
+In practice, `k_t` is not observed. We maintain the posterior belief:
+```
+π_t = P(k_t = 2 | F_t^Y)
+```
+where `F_t^Y` is the filtration generated by observed price moves and order arrivals.
+
+**Innovation process:** The "surprise" in observed price moves given current belief:
+```
+σ(π_t) = π_t·σ₂ + (1−π_t)·σ₁   (blended volatility under current belief)
+dI_t = dS_t / σ(π_t) − dW_t^P   (standardised innovation)
+```
+
+**Wonham filter SDE:**
+```
+dπ_t = [q₁₂(1−π_t) − q₂₁π_t] dt
+       + π_t(1−π_t) · [(σ₂−σ₁)/σ(π_t)] · dI_t
+```
+
+**First term:** deterministic drift from regime dynamics (mean-reverting toward stationary π*)
+**Second term:** stochastic Bayesian update — large price moves (big dI_t) push π_t toward 1
+
+**Blended optimal spread:**
+```
+δ_blended* = (1−π_t)·δ¹* + π_t·δ²*
+```
+
+---
+
+## 12. Numerical Solution Plan
+
+Since no clean closed form exists for the coupled constrained system, we solve numerically:
+
+1. **Discretise** the inventory grid: q ∈ {−Q, ..., 0, ..., Q}, n=41 points
+2. **Time-step backward** from T to 0 using Crank-Nicolson
+3. **At each (q, t) node**, solve the coupled 2×2 system simultaneously
+4. **Store** the optimal δᵃ*(q,t,k) and δᵇ*(q,t,k) tables
+5. **At runtime**, the simulator looks up spreads from these tables
+
+Crank-Nicolson scheme for the diffusion part (θ=0.5):
+```
+(Vᵏ_{n+1} − Vᵏ_n)/dt = ½σₖ² · θ·D²Vᵏ_{n+1} + ½σₖ²·(1−θ)·D²Vᵏ_n + jump terms
+```
+where D² is the second finite-difference operator over q.

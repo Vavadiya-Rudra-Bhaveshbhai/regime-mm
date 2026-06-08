@@ -1,0 +1,69 @@
+# ============================================================
+# Regime-Switching Market Making — Default Configuration
+# ============================================================
+# All parameters for the HJB solver, simulator, and HMM filter.
+# Change values here; all scripts read from this file.
+
+# ---------------------------
+# Regime / Markov chain
+# ---------------------------
+regime:
+  sigma_1: 0.5          # Low-vol regime: annualised vol (scaled to hourly)
+  sigma_2: 2.0          # High-vol regime: annualised vol
+  q_12: 0.5             # Transition rate calm → chaotic (per hour)
+  q_21: 2.0             # Transition rate chaotic → calm (per hour)
+  # Stationary prob of regime 2 = q_12 / (q_12 + q_21) = 0.2 (20%)
+
+# ---------------------------
+# Order flow (Poisson)
+# ---------------------------
+order_flow:
+  A_1: 5.0              # Baseline arrival rate in regime 1 (orders/sec)
+  A_2: 20.0             # Baseline arrival rate in regime 2 (orders/sec)
+  kappa: 1.5            # Sensitivity of traders to spread: λ(δ) = A·exp(−κδ)
+
+# ---------------------------
+# Market maker preferences
+# ---------------------------
+agent:
+  gamma: 0.1            # Risk aversion coefficient
+  phi: 0.01             # Terminal inventory penalty weight
+  q_max: 20             # Maximum inventory (agent halts beyond ±q_max)
+
+# ---------------------------
+# Trading horizon
+# ---------------------------
+time:
+  T: 1.0                # Total trading horizon in hours
+  dt_pde: 0.001         # Time step for PDE solver (1000 steps per hour)
+
+# ---------------------------
+# PDE solver grid
+# ---------------------------
+pde:
+  q_min: -20            # Minimum inventory grid point
+  q_max: 20             # Maximum inventory grid point
+  n_q: 41               # Number of inventory grid points (−20 … +20)
+  scheme: "crank_nicolson"   # Options: explicit, implicit, crank_nicolson
+
+# ---------------------------
+# Simulator
+# ---------------------------
+simulator:
+  n_simulations: 1000   # Number of independent simulation runs
+  seed: 42              # Random seed for reproducibility
+  mid_price_init: 100.0 # Initial mid-price
+
+# ---------------------------
+# HMM filter
+# ---------------------------
+hmm_filter:
+  pi_init: 0.2          # Initial belief P(regime=2) — set to stationary prob
+  obs_window: 10        # Seconds of order flow used for innovation calculation
+
+# ---------------------------
+# Backtest metrics
+# ---------------------------
+backtest:
+  risk_free_rate: 0.0   # For Sharpe calculation (0 for intraday)
+  pnl_freq: "1min"      # Frequency of PnL snapshots for Sharpe
