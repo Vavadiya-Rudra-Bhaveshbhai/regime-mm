@@ -472,28 +472,6 @@ Neither is unreasonable — they are simply different projects.
 | Real data | High (honest calibration) | Low (data access issue) | Any publication |
 | Full fill process | Medium | Medium (non-parametric) | Precise PnL estimates |
 
-### The honest position
-
-This project is correctly described as: *an optimal inventory control
-model for a stylised market maker under regime-switching volatility.*
-
-It is not described as: *a realistic HFT simulator* or *a production
-trading system.*
-
-The simplifications are the standard simplifications of the academic
-literature in this area (Avellaneda-Stoikov 2008, Cartea-Jaimungal
-2015, Gueant 2017). Every quant researcher in this field works with
-these same simplifications and studies extensions to them.
-
-The value of this project is demonstrating that you understand:
-1. Why the simplifications are made (tractability, not laziness)
-2. What each costs in realism
-3. What the path to removing each one looks like
-4. Where the model is and is not applicable
-
-That understanding is what separates a project that impresses
-researchers from one that merely implements existing results.
-
 ---
 
 ## Further Reading
