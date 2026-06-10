@@ -1,4 +1,7 @@
 build/
+results/*.npy
+results/*.json
+results/plots/
 __pycache__/
 *.pyc
 *.egg-info/

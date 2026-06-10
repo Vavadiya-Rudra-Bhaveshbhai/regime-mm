@@ -10,13 +10,19 @@ It updates using two sources of information:
   1. Deterministic drift from the Markov chain dynamics
   2. Stochastic Bayesian update from observed price innovations
 
-The filter SDE (Wonham, 1964):
+The filter SDE (Wonham, 1964) for a volatility-switching model:
     dπ_t = [q₁₂(1−π_t) − q₂₁·π_t] dt
-           + π_t(1−π_t) · [(σ₂−σ₁)/σ(π_t)] · dI_t
+           + π_t(1−π_t) · [(σ₂²−σ₁²) / (2·σ²(π_t))] · innovation_t dt
 
-where:
-    σ(π_t) = π_t·σ₂ + (1−π_t)·σ₁    (blended volatility)
-    dI_t   = dS_t/σ(π_t) − dW_t^P   (innovations process)
+where the blended variance (not standard deviation) enters:
+    σ²(π_t) = π_t·σ₂² + (1−π_t)·σ₁²   (blended variance — correct for vol switching)
+    σ(π_t)  = √σ²(π_t)                  (blended vol, for normalisation only)
+
+NOTE: For a volatility-switching model, the observation variance is
+π_t·σ₂² + (1−π_t)·σ₁², not the square of the linearly blended σ.
+The linear blend σ(π) = π·σ₂ + (1−π)·σ₁ is an approximation used in some
+textbook treatments (Liptser & Shiryaev) but is not exact for this model.
+We implement the chi-squared innovation form which is exact.
 """
 
 import numpy as np
@@ -57,24 +63,39 @@ class WonhamFilter:
     # ── Core update ───────────────────────────────────────────────────
 
     def blended_sigma(self, pi: Optional[float] = None) -> float:
-        """Blended volatility: σ(π) = π·σ₂ + (1−π)·σ₁"""
+        """
+        Blended volatility for a variance-switching model.
+
+        The correct blending for a two-state volatility model is over variance:
+            σ²(π) = π·σ₂² + (1−π)·σ₁²   →   σ(π) = √(π·σ₂² + (1−π)·σ₁²)
+
+        The linear blend π·σ₂ + (1−π)·σ₁ is an approximation that understates
+        the blended vol whenever σ₁ ≠ σ₂ (by Jensen's inequality, √E[σ²] ≥ E[σ]).
+        We use the variance-correct form throughout.
+        """
         p = pi if pi is not None else self.pi
-        return p * self.sigma_2 + (1.0 - p) * self.sigma_1
+        blended_var = p * self.sigma_2**2 + (1.0 - p) * self.sigma_1**2
+        return float(np.sqrt(blended_var))
 
     def update(self, dS: float) -> float:
         """
         Update belief given an observed price move dS over time step dt.
 
-        The Wonham filter uses the squared innovation to avoid sign bias:
-        the key signal for regime detection is the *magnitude* of price moves
-        (large |dS| → more likely in chaotic regime), not their direction.
+        For a volatility-switching model (dS = σ_k dW), the natural sufficient
+        statistic for distinguishing regimes is dS², not dS (price moves have
+        zero mean under both regimes, so the sign carries no information).
 
-        We implement a discretised version:
-          dπ = drift·dt + gain·(dS²/σ(π)²·dt − 1)·dt
+        We use the chi-squared innovation form, which is exact for this model:
+          innovation = dS²/(σ²(π)·dt) − 1
 
-        where (dS²/σ²dt − 1) is the chi-squared innovation (expected value 0
-        under the current belief), which is positive when |dS| > σ_blended·√dt
-        (bigger move than expected → push π toward 1) and negative otherwise.
+        Expected value = 0 under current belief π (no surprise on average).
+        Positive when |dS| > σ(π)·√dt → evidence for chaotic regime → π rises.
+        Negative when |dS| < σ(π)·√dt → evidence for calm regime → π falls.
+
+        The gain term π(1−π)·(σ₂²−σ₁²)/(2·σ²(π)) is the likelihood-ratio
+        sensitivity — how much a unit innovation should update the belief.
+        This uses variance differences σ₂²−σ₁² (not σ₂−σ₁), which is the
+        correct form for a variance-switching observation model.
 
         Parameters
         ----------

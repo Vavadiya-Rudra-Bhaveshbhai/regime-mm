@@ -84,9 +84,10 @@ def optimal_spread_and_rate(
     For each inventory level, compute optimal half-spread δ* and the
     corresponding arrival rate λ*(δ*).
 
-    First-order condition of:  f(δ) = A · e^{−κδ} · (ΔV + δ)
+    First-order condition of:  f(δ) = A · e^{−κδ} · (δ + C)
+    where C = h(q−1)−h(q) + γσₖ²qτ − ½γσₖ²τ  (passed in as delta_V)
     Setting df/dδ = 0:
-        −κ(ΔV + δ*) + 1 = 0  ⟹  δ* = 1/κ − ΔV
+        −κ(δ* + C) + 1 = 0  ⟹  δ* = 1/κ − C
 
     If δ* < 0, we clip to a minimum spread (e.g. 1 tick = 0.01).
     """
@@ -145,14 +146,24 @@ class HJBSolver:
         A_k = p.A[k]
         gamma_k = p.gamma * p.sigma[k] ** 2
 
-        # ΔVᵃ(q) = h(q−1) − h(q) − γσₖ²·q·τ
-        # (the inventory risk adjustment: selling reduces q, changes penalty)
+        # Exact ΔVᵃ from ansatz substitution (see docs/math_derivation.md §8):
+        #   ΔVᵃ(q) = δᵃ + h(q−1) − h(q) + γσₖ²·q·τ − ½γσₖ²·τ
+        # So C(q) = h(q−1) − h(q) + γσₖ²·q·τ − ½γσₖ²·τ
+        # and δᵃ* = 1/κ − C(q)
+        #
+        # Note sign: +γσₖ²·q·τ (positive), so long inventory (q>0) increases C,
+        # which DECREASES δᵃ* (tightens ask) — correct: MM wants to sell.
+        # Previous version had −γσₖ²·q·τ which inverted the skew direction.
         dV_a = np.zeros(self.n_q)
         dV_b = np.zeros(self.n_q)
 
-        # Interior points
-        dV_a[1:] = h_k[:-1] - h_k[1:] - gamma_k * self.q_grid[1:] * tau
-        dV_b[:-1] = h_k[1:] - h_k[:-1] + gamma_k * self.q_grid[:-1] * tau
+        # Interior points — exact formula from FOC derivation
+        dV_a[1:] = (h_k[:-1] - h_k[1:]
+                    + gamma_k * self.q_grid[1:] * tau
+                    - 0.5 * gamma_k * tau)
+        dV_b[:-1] = (h_k[1:] - h_k[:-1]
+                     - gamma_k * self.q_grid[:-1] * tau
+                     - 0.5 * gamma_k * tau)
 
         # Boundary: cannot sell if at -q_max, cannot buy if at +q_max
         dV_a[0] = 0.0   # no ask at minimum inventory

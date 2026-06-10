@@ -74,9 +74,18 @@ def test_stationary_pi():
 
 
 def test_blended_sigma():
+    """
+    blended_sigma should use variance weighting, not linear weighting.
+    Correct: σ(π) = sqrt(π·σ₂² + (1−π)·σ₁²)
+    Wrong:   σ(π) = π·σ₂ + (1−π)·σ₁   (linear blend understates vol by Jensen)
+    """
+    import numpy as np
     f = make_filter(sigma_1=0.5, sigma_2=2.0, pi_init=0.4)
-    expected = 0.4 * 2.0 + 0.6 * 0.5
-    assert abs(f.blended_sigma() - expected) < 1e-10
+    expected_variance_blend = np.sqrt(0.4 * 2.0**2 + 0.6 * 0.5**2)   # correct
+    wrong_linear_blend      = 0.4 * 2.0 + 0.6 * 0.5                  # incorrect
+    assert abs(f.blended_sigma() - expected_variance_blend) < 1e-10
+    # Verify it is NOT the linear blend (they differ by Jensen's inequality gap)
+    assert abs(f.blended_sigma() - wrong_linear_blend) > 0.1
 
 
 def test_batch_update_shape():

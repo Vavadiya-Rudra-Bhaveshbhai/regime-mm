@@ -4,6 +4,9 @@ This document gives a completely honest account of every simplification
 in the model, why it was made, what it costs in realism, and what a
 full research-grade implementation would require instead.
 
+Reading this before an interview is more valuable than memorising the
+results. Every question a quant researcher can ask about the model's
+validity is answered here.
 
 ---
 

@@ -82,6 +82,26 @@ J(x, q, S, t, k) = E[ x_T + q_T · S_T − (φ/2) · q_T²  |  x_t=x, q_t=q, S_t
 
 The term `(φ/2)q_T²` penalises holding a large position at end of day.
 
+**Note on two risk-aversion parameters:** The objective has terminal penalty φ, but
+the ansatz in Section 9 introduces a separate running-inventory term γ. These are
+not redundant — they serve different purposes:
+
+- **φ (terminal penalty)**: appears in the boundary condition h(q,T) = −(φ/2)q².
+  It penalises inventory *held at the end of the session* and is part of the
+  formal optimisation objective.
+
+- **γ (running risk aversion)**: appears in the ansatz V = x + qS − ½γσₖ²q²τ + h.
+  This term accounts for the *ongoing mark-to-market risk* of holding inventory q
+  in a market with volatility σₖ. It is an Avellaneda-Stoikov approximation that
+  separates the inventory risk from the trading optimisation, enabling the PDE
+  reduction. It does not appear in J directly.
+
+In the single-regime unconstrained limit, φ and γ can be made consistent by
+choosing γ = φ/(σ²T). In the regime-switching case with coupling, they are
+independent parameters: φ governs end-of-day liquidation risk, γ governs
+intraday spread widening. An interviewer asking "why both?" should receive
+this explanation.
+
 ---
 
 ## 6. Value Function
@@ -142,19 +162,36 @@ This is a **system of two coupled PDEs** — coupled via the last line.
 
 For the ask term, maximise over δᵃ:
 ```
-f(δᵃ) = A_k · exp(−κδᵃ) · [Vᵏ(x+S+δᵃ, q−1, S, t) − Vᵏ]
+f(δᵃ) = A_k · exp(−κδᵃ) · [Vᵏ(x+S+δᵃ, q−1, S, t) − Vᵏ(x, q, S, t)]
 ```
 
-Let ΔVᵃ = Vᵏ(x+S+δᵃ, q−1, S, t) − Vᵏ(x, q, S, t).
-
-At the margin, ΔVᵃ ≈ (∂Vᵏ/∂x)·δᵃ + constant. Taking df/dδᵃ = 0:
+After substituting the ansatz Vᵏ = x + qS − ½γσₖ²q²τ + hᵏ(q,t), the value
+difference computes exactly (all x, S terms cancel cleanly):
 
 ```
-−κ · A_k · exp(−κδᵃ) · ΔVᵃ + A_k · exp(−κδᵃ) · (∂Vᵏ/∂x) = 0
-⟹ δᵃ* = (1/κ) − ΔVᵃ / (∂Vᵏ/∂x) · (1/κ)
+ΔVᵃ = [x+(S+δᵃ) + (q−1)S − ½γσₖ²(q−1)²τ + hᵏ(q−1,t)]
+     − [x + qS   −  ½γσₖ²q²τ              + hᵏ(q,t)  ]
+    = δᵃ  +  hᵏ(q−1,t) − hᵏ(q,t)  −  γσₖ²qτ + ½γσₖ²τ
+    ≡ δᵃ  +  C(q, t, k)
 ```
 
-After the ansatz substitution (see Section 9), this simplifies to the closed form.
+where C(q,t,k) = hᵏ(q−1,t) − hᵏ(q,t) − γσₖ²qτ + ½γσₖ²τ collects everything
+independent of δᵃ. So:
+
+```
+f(δᵃ) = A_k · e^{−κδᵃ} · (δᵃ + C)
+```
+
+Taking df/dδᵃ = 0:
+```
+−κ · A_k · e^{−κδᵃ} · (δᵃ + C)  +  A_k · e^{−κδᵃ} · 1  =  0
+⟹  −κ(δᵃ + C) + 1  =  0
+⟹  δᵃ*  =  1/κ − C
+          =  1/κ − hᵏ(q−1,t) + hᵏ(q,t) + γσₖ²qτ − ½γσₖ²τ
+```
+
+Second-order condition: d²f/d(δᵃ)² = −κ²(δᵃ+C)e^{−κδᵃ}A_k < 0 when δᵃ* > 0,
+confirming this is a maximum. The same derivation gives δᵇ* symmetrically.
 
 ---
 
@@ -189,18 +226,25 @@ Taking first-order conditions on δᵃ and δᵇ:
 δᵏ·ᵇ* = (1/κ) − [hᵏ(q,t) − hᵏ(q+1,t)] − γσₖ²q(T−t)
 ```
 
-For the unconstrained case (no inventory limits, single regime), this reduces to:
+For the unconstrained single-regime case (no inventory limits, no coupling),
+and approximating hᵏ(q,t) ≈ hᵏ(q,t)|_{symmetric} so that h(q−1)−h(q) ≈ −γσ²qτ,
+this reduces to the **Avellaneda-Stoikov approximation**:
 
 ```
-δ* = 1/κ  +  γσ²(T−t)/2
+δ* ≈ 1/κ  +  γσ²(T−t)/2        [A-S approximation, not exact for coupled system]
 ```
 
-The **reservation price** (the MM quotes symmetrically around it):
+**Important:** once regime switching and coupling terms are present, this formula
+no longer follows directly from the HJB. The exact optimal spread requires the full
+numerical solution for hᵏ(q,t). The A-S formula serves as an initialisation and
+sanity check, but the simulator uses the numerically computed spreads.
+
+The **reservation price** (A-S approximation):
 ```
-r = S − q · γ · σ² · (T−t)
+r ≈ S − q · γ · σ² · (T−t)      [A-S approximation]
 ```
 
-Total spread = `2/κ + γσ²(T−t)`
+Total approximate spread = `2/κ + γσ²(T−t)` per regime.
 
 ---
 
@@ -236,16 +280,37 @@ dπ_t = [q₁₂(1−π_t) − q₂₁π_t] dt
 
 ## 12. Numerical Solution Plan
 
-Since no clean closed form exists for the coupled constrained system, we solve numerically:
+Since no clean closed form exists for the coupled constrained system, we solve numerically.
+
+**Important structural note:** After the ansatz reduction, the ½σₖ²∂²V/∂S² diffusion
+term has been completely eliminated from the PDE — it lives in S-space, and S drops out
+of the reduced equation entirely. What remains is a coupled system of ODEs in time on
+a discrete inventory grid, with jump terms between neighbouring inventory states q−1, q,
+q+1. There is no diffusion operator in inventory. Crank-Nicolson is used only for the
+time integration, not as a spatial discretisation of any diffusion.
+
+The reduced system at each inventory node q is:
+
+```
+dhᵏ/dt = jump_a(q, hᵏ, hᵏ, k, τ)
+        + jump_b(q, hᵏ, hᵏ, k, τ)
+        + Σⱼ≠ₖ qₖⱼ·(hʲ(q,t) − hᵏ(q,t))
+```
+
+This is an ODE system (no spatial derivative in q), coupled across k ∈ {1,2}.
+
+**Numerical procedure:**
 
 1. **Discretise** the inventory grid: q ∈ {−Q, ..., 0, ..., Q}, n=41 points
-2. **Time-step backward** from T to 0 using Crank-Nicolson
-3. **At each (q, t) node**, solve the coupled 2×2 system simultaneously
-4. **Store** the optimal δᵃ*(q,t,k) and δᵇ*(q,t,k) tables
-5. **At runtime**, the simulator looks up spreads from these tables
+2. **Time-step backward** from T to 0 using trapezoidal (Crank-Nicolson) rule
+   for the time derivative only:
+   ```
+   hᵏ(q, tₙ) = hᵏ(q, tₙ₊₁) + ½·dt·[RHS(tₙ₊₁) + RHS(tₙ)]
+   ```
+3. **At each (q, t) node**, solve the max over δᵃ and δᵇ analytically via FOC
+4. **Simultaneously update** h¹ and h² at each step (coupling requires joint solve)
+5. **Store** the optimal δᵃ*(q,t,k) and δᵇ*(q,t,k) lookup tables
 
-Crank-Nicolson scheme for the diffusion part (θ=0.5):
-```
-(Vᵏ_{n+1} − Vᵏ_n)/dt = ½σₖ² · θ·D²Vᵏ_{n+1} + ½σₖ²·(1−θ)·D²Vᵏ_n + jump terms
-```
-where D² is the second finite-difference operator over q.
+The Crank-Nicolson label refers only to the second-order accurate trapezoidal
+time-stepping scheme. There is no finite-difference diffusion operator anywhere
+in the reduced problem.
