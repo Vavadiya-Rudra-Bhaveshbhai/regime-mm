@@ -398,7 +398,7 @@ return series generated to match documented statistical properties of SPY
 (Christoffersen 2011, Andersen et al. 2001, Ang & Bekaert 2002) — specifically
 calm/chaotic volatility levels and average regime durations reported in the
 literature. This is calibration to literature-reported moments, not
-estimation from raw exchange tick data. See `docs/MODEL_LIMITATIONS.md`
+estimation from raw exchange tick data. See `docs/model_limitations.md`
 Section 5 for what would be required to use real tick data.
 
 **Symmetric order flow.** Ask and bid arrivals are modelled as independent

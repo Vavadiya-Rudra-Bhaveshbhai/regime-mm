@@ -78,7 +78,7 @@ Each row adds one component to the previous. 5000 simulations per row.
 
 *Note: arrival probabilities use the exact form `1 − e^{−λΔt}` rather than the small-Δt
 approximation `λΔt`, which matters at the high arrival rates (A₂=50/min) used in the
-chaotic regime — see `docs/MODEL_LIMITATIONS.md`.*
+chaotic regime — see `docs/model_limitations.md`.*
 
 ---
 
