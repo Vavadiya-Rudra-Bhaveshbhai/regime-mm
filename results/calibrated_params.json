@@ -1,0 +1,21 @@
+{
+  "note": "Parameters estimated via Otsu-thresholded rolling 20-min RV and MLE transition counting on 100k synthetic 1-min returns calibrated to SPY intraday volatility structure.",
+  "references": [
+    "Christoffersen (2011)",
+    "Andersen et al (2001)",
+    "Ang & Bekaert (2002)"
+  ],
+  "sigma_calm_per_min": 0.0004580203418573682,
+  "sigma_chaotic_per_min": 0.00082908680078818,
+  "sigma_calm_annual": 0.14358773354921098,
+  "sigma_chaotic_annual": 0.25991573683819746,
+  "q12_per_min": 0.01624110962748976,
+  "q21_per_min": 0.04483562777401471,
+  "avg_calm_duration_min": 61.57214765100756,
+  "avg_chaotic_duration_min": 22.303691275168624,
+  "stationary_p_chaotic": 0.26591318263653196,
+  "segmentation_accuracy": 0.7981316450125524,
+  "n_obs": 100000,
+  "window_min": 20,
+  "threshold_method": "Otsu"
+}
