@@ -1,18 +1,41 @@
 """
 hjb_solver.py
 =============
-Solves the coupled Hamilton-Jacobi-Bellman (HJB) PDE system for the
-regime-switching market making problem using a Crank-Nicolson finite
-difference scheme.
+Solves the coupled, reduced Hamilton-Jacobi-Bellman (HJB) system
+(a coupled ODE system in t over discrete (q,k), NOT a PDE in q -
+see docs/math_derivation.md Sec.12) for the
+regime-switching market making problem using backward trapezoidal
+(Crank-Nicolson-in-time) integration on a discrete inventory grid.
 
-The system (for k=1,2):
+NAMING NOTE: After the ansatz reduction (V = x+qS+h(q,t)), the price
+diffusion ½σ²∂²V/∂S² has been eliminated entirely (it acts on S, which
+has dropped out). The reduced system is a coupled set of nonlinear ODEs
+in time, indexed by discrete inventory q, with transitions only through
+jump terms h(q-1), h(q+1) — NOT a spatial diffusion operator over q.
+"Crank-Nicolson" here refers ONLY to the trapezoidal rule applied to the
+time derivative; there is no spatial discretisation of any kind.
+
+The system (for k=1,2), BEFORE the ansatz:
 
   ∂Vᵏ/∂t + ½σₖ² ∂²Vᵏ/∂S²
-    + max_{δᵃ} { λₖᵃ(δᵃ) · [Vᵏ(q−1) − Vᵏ(q) + δᵃ] }
-    + max_{δᵇ} { λₖᵇ(δᵇ) · [Vᵏ(q+1) − Vᵏ(q) + δᵇ] }
+    + max_{δᵃ} { λₖᵃ(δᵃ) · [Vᵏ(x+S+δᵃ,q−1,S,t) − Vᵏ] }
+    + max_{δᵇ} { λₖᵇ(δᵇ) · [Vᵏ(x−S+δᵇ,q+1,S,t) − Vᵏ] }
     + Σⱼ≠ₖ qₖⱼ · (Vʲ − Vᵏ) = 0
 
-After the change of variables Vᵏ(x,q,S,t) = x + qS + hᵏ(q,t), the
+After the FULL change of variables
+  Vᵏ(x,q,S,t) = x + qS − ½γσₖ²q²(T−t) + hᵏ(q,t)
+(NOT V=x+qS+h — the quadratic inventory-penalty term is part of the
+ansatz and is explicitly EXCLUDED from h; see math_derivation.md §9),
+the reduced ODE for hᵏ(q,t) is:
+
+  ∂hᵏ/∂t = -½γσₖ²q²
+           + max_{δᵃ}{A_k e^{−κδᵃ}[hᵏ(q−1,t)−hᵏ(q,t)+δᵃ+γσₖ²qτ−½γσₖ²τ]}
+           + max_{δᵇ}{A_k e^{−κδᵇ}[hᵏ(q+1,t)−hᵏ(q,t)+δᵇ−γσₖ²qτ−½γσₖ²τ]}
+           + Σⱼ≠ₖ qₖⱼ(hʲ−hᵏ)
+
+This is what `solve()` integrates backward (the -½γσₖ²q² term is `quad1`/
+`quad2` in the loop; the bracketed max{} terms are `dV_a`+δᵃ and `dV_b`+δᵇ
+via `_jump_terms`). The
 S-dependence drops out and we solve for hᵏ(q,t) on a grid over q and t.
 
 Usage:
@@ -210,15 +233,30 @@ class HJBSolver:
             coupling1 = q12 * (h2_curr - h1_curr)
             coupling2 = q21 * (h1_curr - h2_curr)
 
-            # Explicit Euler update (Crank-Nicolson refinement applied below)
-            # ∂h/∂t = jump_a + jump_b + coupling
-            rhs1 = ja1 + jb1 + coupling1
-            rhs2 = ja2 + jb2 + coupling2
+            # Quadratic-penalty source term, from ∂V/∂t = +½γσₖ²q² + ∂h/∂t
+            # (see docs/math_derivation.md §9). Rearranging the HJB:
+            #   ∂h/∂t = -½γσₖ²q² - jump_a - jump_b - coupling
+            # Backward integration h(earlier)=h(later)+dt*RHS uses RHS=∂h/∂t,
+            # so RHS = -½γσₖ²q² + jump_a + jump_b + coupling.
+            # NOTE: this term was missing in earlier versions (a real bug —
+            # it is comparable in magnitude to the jump terms for |q| large).
+            # Also note the coupling term as written uses only (h^j-h^k); the
+            # fully exact coupling would add -(γ/2)q²τ(σ_j²-σ_k²)*q_kj from
+            # V^j-V^k (see math_derivation.md §14) — this residual cross-sigma
+            # term is NOT included and is a further (smaller) approximation.
+            quad1 = -0.5 * p.gamma * p.sigma[0]**2 * self.q_grid**2
+            quad2 = -0.5 * p.gamma * p.sigma[1]**2 * self.q_grid**2
+
+            # Explicit Euler predictor (trapezoidal correction applied below)
+            rhs1 = quad1 + ja1 + jb1 + coupling1
+            rhs2 = quad2 + ja2 + jb2 + coupling2
 
             h1_new = h1_curr + self.dt * rhs1
             h2_new = h2_curr + self.dt * rhs2
 
-            # ── Crank-Nicolson correction (one iteration) ──────────────
+            # ── Backward trapezoidal correction (one iteration) ─────────
+            # Average RHS at tau and tau-dt: this is the trapezoidal rule
+            # for the TIME derivative only. No spatial operator involved.
             # Recompute jump terms at new estimates, average with old
             ja1_new, jb1_new, da1, db1 = self._jump_terms(h1_new, 0, tau - self.dt)
             ja2_new, jb2_new, da2, db2 = self._jump_terms(h2_new, 1, tau - self.dt)
@@ -226,8 +264,8 @@ class HJBSolver:
             coupling1_new = q12 * (h2_new - h1_new)
             coupling2_new = q21 * (h1_new - h2_new)
 
-            rhs1_new = ja1_new + jb1_new + coupling1_new
-            rhs2_new = ja2_new + jb2_new + coupling2_new
+            rhs1_new = quad1 + ja1_new + jb1_new + coupling1_new
+            rhs2_new = quad2 + ja2_new + jb2_new + coupling2_new
 
             # Averaged (CN) update
             self.h[0, :, t_next] = h1_curr + 0.5 * self.dt * (rhs1 + rhs1_new)

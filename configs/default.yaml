@@ -8,8 +8,14 @@
 # Regime / Markov chain
 # ---------------------------
 regime:
-  sigma_1: 0.5          # Low-vol regime: annualised vol (scaled to hourly)
-  sigma_2: 2.0          # High-vol regime: annualised vol
+  # NOTE (calibration disconnect): results/calibrated_params.json (synthetic,
+  # SPY-literature-matched) gives sigma_1~0.0046/hr, sigma_2~0.012/hr - ~100x
+  # smaller than the round numbers below. These defaults are illustrative/
+  # pedagogical (chosen for visibly distinct regimes in plots), NOT the
+  # calibrated SPY-scale values. To run a SPY-scale simulation, substitute
+  # the calibrated_params.json values here.
+  sigma_1: 0.5          # Low-vol regime (illustrative, not SPY-scale)
+  sigma_2: 2.0          # High-vol regime (illustrative, not SPY-scale)
   q_12: 0.5             # Transition rate calm → chaotic (per hour)
   q_21: 2.0             # Transition rate chaotic → calm (per hour)
   # Stationary prob of regime 2 = q_12 / (q_12 + q_21) = 0.2 (20%)
@@ -18,8 +24,14 @@ regime:
 # Order flow (Poisson)
 # ---------------------------
 order_flow:
-  A_1: 5.0              # Baseline arrival rate in regime 1 (orders/sec)
-  A_2: 20.0             # Baseline arrival rate in regime 2 (orders/sec)
+  A_1: 5.0              # Baseline arrival rate in regime 1 (orders/HOUR, not /sec -
+                        # at dt=0.001h=3.6s, A*dt must stay << 1 for a sensible model)
+  A_2: 50.0             # Baseline arrival rate in regime 2 (orders/hour). NOTE: README
+                        # /generate_figures.py use A_1=5, A_2=50 PER MINUTE with dt=1/60h
+                        # (a different, faster timescale) - the headline ablation/figure
+                        # results come from generate_figures.py's own embedded params,
+                        # NOT from this file. This file is the reference config for
+                        # hjb_solver.py / backtest_engine.py only.
   kappa: 1.5            # Sensitivity of traders to spread: λ(δ) = A·exp(−κδ)
 
 # ---------------------------
@@ -59,7 +71,8 @@ simulator:
 # ---------------------------
 hmm_filter:
   pi_init: 0.2          # Initial belief P(regime=2) — set to stationary prob
-  obs_window: 10        # Seconds of order flow used for innovation calculation
+  # obs_window removed (Issue I): was dead code, unused by BayesVolFilter,
+  # a remnant of an earlier (discarded) windowed-innovation filter design.
 
 # ---------------------------
 # Backtest metrics
@@ -67,3 +80,11 @@ hmm_filter:
 backtest:
   risk_free_rate: 0.0   # For Sharpe calculation (0 for intraday)
   pnl_freq: "1min"      # Frequency of PnL snapshots for Sharpe
+
+# ---------------------------
+# Adverse selection (Issue J)
+# ---------------------------
+adv_selection:
+  alpha: 0.30                # price moves alpha*spread against MM on informed fill
+  p_informed_calm: 0.05      # P(informed | regime=calm)
+  p_informed_chaotic: 0.35   # P(informed | regime=chaotic)

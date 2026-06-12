@@ -172,9 +172,9 @@ for N in sizes:
                 da=max(1/kappa+0.5*gamma*sv**2*tau-gamma*sv**2*tau*q,1e-4)
                 db=max(1/kappa+0.5*gamma*sv**2*tau+gamma*sv**2*tau*q,1e-4)
                 A_k=A2 if regime==1 else A1
-                if rng.random()<A_k*np.exp(-kappa*da)*dt_sim:
+                if rng.random() < (1.0 - np.exp(-A_k*np.exp(-kappa*da)*dt_sim)):
                     cash+=S+da; q-=1
-                if abs(q)<q_max and rng.random()<A_k*np.exp(-kappa*db)*dt_sim:
+                if abs(q)<q_max and rng.random() < (1.0 - np.exp(-A_k*np.exp(-kappa*db)*dt_sim)):
                     cash-=S-db; q+=1
         runs.append(time.perf_counter()-t0)
     times_full.append(np.median(runs))

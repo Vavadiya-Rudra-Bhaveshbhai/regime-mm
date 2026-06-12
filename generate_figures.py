@@ -129,10 +129,10 @@ for sim in range(n_sims):
             else:
                 da = db = 1/kappa
 
-            if rng.random() < A_k*np.exp(-kappa*da)*dt:
+            if rng.random() < (1.0 - np.exp(-A_k*np.exp(-kappa*da)*dt)):
                 cash += S+da; q -= 1
                 if rng.random() < p_inf: S += alpha_adverse*da
-            if abs(q)<q_max and rng.random() < A_k*np.exp(-kappa*db)*dt:
+            if abs(q)<q_max and rng.random() < (1.0 - np.exp(-A_k*np.exp(-kappa*db)*dt)):
                 cash -= S-db; q += 1
                 if rng.random() < p_inf: S -= alpha_adverse*db
 
@@ -190,10 +190,10 @@ for sim in range(N_TRACES):
                 db=max(1/kappa+0.5*gamma*sv_avg**2*tau+gamma*sv_avg**2*tau*q,1e-4)
             else:
                 da=db=1/kappa
-            if rng.random()<A_k*np.exp(-kappa*da)*dt:
+            if rng.random() < (1.0 - np.exp(-A_k*np.exp(-kappa*da)*dt)):
                 q-=1
                 if rng.random()<p_inf: S+=alpha_adverse*da
-            if abs(q)<q_max and rng.random()<A_k*np.exp(-kappa*db)*dt:
+            if abs(q)<q_max and rng.random() < (1.0 - np.exp(-A_k*np.exp(-kappa*db)*dt)):
                 q+=1
                 if rng.random()<p_inf: S-=alpha_adverse*db
             inv_state[atype]['q']=q

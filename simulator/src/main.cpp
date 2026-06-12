@@ -156,7 +156,8 @@ RunResult run_one(const SimConfig& cfg, std::mt19937& rng) {
 
     // Naive agent uses average sigma weighted by stationary distribution
     double pi_star = cfg.q_12 / (cfg.q_12 + cfg.q_21);
-    double sigma_avg = (1.0 - pi_star) * cfg.sigma_1 + pi_star * cfg.sigma_2;
+    double sigma_avg = std::sqrt((1.0 - pi_star) * cfg.sigma_1 * cfg.sigma_1
+                            + pi_star * cfg.sigma_2 * cfg.sigma_2);
 
     std::uniform_real_distribution<double> unif(0.0, 1.0);
     std::normal_distribution<double> norm(0.0, 1.0);
@@ -193,8 +194,11 @@ RunResult run_one(const SimConfig& cfg, std::mt19937& rng) {
         // Poisson: prob of arrival in dt = λ(δ) · dt = A · e^{−κδ} · dt
         double A_k = regime.A();
         auto poisson_hit = [&](double da, double db) -> std::pair<bool, bool> {
-            double rate_a = A_k * std::exp(-cfg.kappa * da) * cfg.dt;
-            double rate_b = A_k * std::exp(-cfg.kappa * db) * cfg.dt;
+            // Exact Poisson P(>=1 arrival) = 1-exp(-lambda*dt), not lambda*dt
+            // (Issue E: earlier version used the lambda*dt approximation, which
+            // diverges from the Python backtest engine at high A_k).
+            double rate_a = 1.0 - std::exp(-A_k * std::exp(-cfg.kappa * da) * cfg.dt);
+            double rate_b = 1.0 - std::exp(-A_k * std::exp(-cfg.kappa * db) * cfg.dt);
             return {unif(rng) < rate_a, unif(rng) < rate_b};
         };
 

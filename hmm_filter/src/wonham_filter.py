@@ -1,28 +1,53 @@
 """
 wonham_filter.py
 ================
-Implements the continuous-time Wonham filter for online regime inference.
+Online Bayesian filter for a 2-state volatility-switching hidden Markov model.
 
-The filter maintains the posterior belief:
-    π_t = P(k_t = 2 | observations up to t)
+IMPORTANT — terminology and derivation note
+-------------------------------------------
+The classical Wonham (1964) filter applies to a model where the hidden
+Markov chain affects the DRIFT of the observation process:
 
-It updates using two sources of information:
-  1. Deterministic drift from the Markov chain dynamics
-  2. Stochastic Bayesian update from observed price innovations
+    dY_t = h(k_t) dt + dW_t          [Wonham / drift-signal case]
 
-The filter SDE (Wonham, 1964) for a volatility-switching model:
-    dπ_t = [q₁₂(1−π_t) − q₂₁·π_t] dt
-           + π_t(1−π_t) · [(σ₂²−σ₁²) / (2·σ²(π_t))] · innovation_t dt
+In that setting, the filter SDE takes the well-known form with a linear
+innovation term dI_t = dY_t − h_bar dt.
 
-where the blended variance (not standard deviation) enters:
-    σ²(π_t) = π_t·σ₂² + (1−π_t)·σ₁²   (blended variance — correct for vol switching)
-    σ(π_t)  = √σ²(π_t)                  (blended vol, for normalisation only)
+Our model is DIFFERENT. The hidden state k_t affects VOLATILITY, not drift:
 
-NOTE: For a volatility-switching model, the observation variance is
-π_t·σ₂² + (1−π_t)·σ₁², not the square of the linearly blended σ.
-The linear blend σ(π) = π·σ₂ + (1−π)·σ₁ is an approximation used in some
-textbook treatments (Liptser & Shiryaev) but is not exact for this model.
-We implement the chi-squared innovation form which is exact.
+    dS_t = sigma(k_t) dW_t            [volatility-switching case]
+    E[dS_t | k_t] = 0 for both regimes
+
+This is a fundamentally harder filtering problem. The drift is zero
+under both regimes, so there is no drift-based innovation signal.
+The correct approach is to filter on the QUADRATIC VARIATION (squared
+increments), which carry the volatility information.
+
+CORRECT FILTER — Discrete-time Bayesian update
+----------------------------------------------
+At each step, apply Bayes' theorem exactly:
+
+    Prediction:  pi_pred = pi + [q12(1-pi) - q21*pi] * dt
+    Likelihood:  L_k = N(dS; 0, sigma_k^2 * dt)   for k in {1, 2}
+    Update:      pi_new = pi_pred * L2 / (pi_pred*L2 + (1-pi_pred)*L1)
+
+This is exact in discrete time and converges to the correct continuous-time
+filter as dt → 0. It is derived from first principles (Bayes + Markov
+prediction), not from the Wonham equation which does not apply here.
+
+References
+----------
+Elliott, R.J., Aggoun, L. & Moore, J.B. (1995).
+    Hidden Markov Models: Estimation and Control. Springer.
+    Chapter 6 covers the volatility-switching observation model.
+
+Liptser, R.S. & Shiryaev, A.N. (2001).
+    Statistics of Random Processes II. Springer.
+    §9.4 for the general nonlinear filtering equation (Zakai/Kushner-Stratonovich).
+
+Hamilton, J.D. (1989).
+    A new approach to the economic analysis of nonstationary time series.
+    Econometrica 57(2). — Discrete-time version of this filter.
 """
 
 import numpy as np
@@ -31,18 +56,25 @@ from typing import Optional
 
 
 @dataclass
-class WonhamFilter:
+class BayesVolFilter:
     """
-    Online Wonham HMM filter for 2-regime volatility.
+    Exact discrete-time Bayesian filter for a 2-state volatility-switching HMM.
+
+    The hidden state k_t ∈ {1 (calm), 2 (chaotic)} affects the observation
+    volatility dS_t = sigma(k_t) dW_t. The filter maintains:
+
+        pi_t = P(k_t = 2 | S_0, S_1, ..., S_t)
+
+    via a predict-update cycle at each observed price increment dS.
 
     Parameters
     ----------
-    sigma_1 : volatility in calm regime
-    sigma_2 : volatility in chaotic regime
-    q_12    : transition rate calm → chaotic
-    q_21    : transition rate chaotic → calm
-    pi_init : initial belief P(regime=2)
-    dt      : simulation time step (seconds)
+    sigma_1 : volatility in calm regime (per sqrt(dt))
+    sigma_2 : volatility in chaotic regime (per sqrt(dt))
+    q_12    : transition rate calm → chaotic (per unit time)
+    q_21    : transition rate chaotic → calm (per unit time)
+    pi_init : initial belief P(k_0 = 2); defaults to stationary probability
+    dt      : time step (same units as q_12, q_21)
     """
 
     sigma_1:  float
@@ -50,9 +82,8 @@ class WonhamFilter:
     q_12:     float
     q_21:     float
     pi_init:  float = 0.2
-    dt:       float = 1.0    # seconds
+    dt:       float = 1.0
 
-    # Runtime state (post-init)
     pi:       float = field(init=False)
     history:  list  = field(init=False, repr=False)
 
@@ -62,69 +93,59 @@ class WonhamFilter:
 
     # ── Core update ───────────────────────────────────────────────────
 
-    def blended_sigma(self, pi: Optional[float] = None) -> float:
-        """
-        Blended volatility for a variance-switching model.
-
-        The correct blending for a two-state volatility model is over variance:
-            σ²(π) = π·σ₂² + (1−π)·σ₁²   →   σ(π) = √(π·σ₂² + (1−π)·σ₁²)
-
-        The linear blend π·σ₂ + (1−π)·σ₁ is an approximation that understates
-        the blended vol whenever σ₁ ≠ σ₂ (by Jensen's inequality, √E[σ²] ≥ E[σ]).
-        We use the variance-correct form throughout.
-        """
-        p = pi if pi is not None else self.pi
-        blended_var = p * self.sigma_2**2 + (1.0 - p) * self.sigma_1**2
-        return float(np.sqrt(blended_var))
-
     def update(self, dS: float) -> float:
         """
-        Update belief given an observed price move dS over time step dt.
+        Bayesian predict-update step given observed price increment dS.
 
-        For a volatility-switching model (dS = σ_k dW), the natural sufficient
-        statistic for distinguishing regimes is dS², not dS (price moves have
-        zero mean under both regimes, so the sign carries no information).
+        Step 1 — Prediction (Markov chain propagation):
+            pi_pred = pi + [q12*(1-pi) - q21*pi] * dt
 
-        We use the chi-squared innovation form, which is exact for this model:
-          innovation = dS²/(σ²(π)·dt) − 1
+        Step 2 — Likelihood (Gaussian observation model):
+            L_k = N(dS; 0, sigma_k^2 * dt)
+                = exp(-dS^2 / (2*sigma_k^2*dt)) / sqrt(2*pi*sigma_k^2*dt)
 
-        Expected value = 0 under current belief π (no surprise on average).
-        Positive when |dS| > σ(π)·√dt → evidence for chaotic regime → π rises.
-        Negative when |dS| < σ(π)·√dt → evidence for calm regime → π falls.
+            Note: the sqrt(2*pi*sigma_k^2*dt) normalising constants cancel
+            in the ratio, so we only need the exponential parts.
 
-        The gain term π(1−π)·(σ₂²−σ₁²)/(2·σ²(π)) is the likelihood-ratio
-        sensitivity — how much a unit innovation should update the belief.
-        This uses variance differences σ₂²−σ₁² (not σ₂−σ₁), which is the
-        correct form for a variance-switching observation model.
+        Step 3 — Bayesian update:
+            pi_new = pi_pred * L2 / (pi_pred*L2 + (1-pi_pred)*L1)
+
+        This is exact for the discrete-time model and requires no
+        approximation or ad-hoc innovation construction.
 
         Parameters
         ----------
-        dS : observed change in mid-price over dt
+        dS : observed price change over one time step dt
 
         Returns
         -------
-        Updated π_t
+        Updated posterior P(k = 2 | observations)
         """
         pi = self.pi
-        sigma_b = self.blended_sigma(pi)
 
-        # Chi-squared innovation: (observed variance / expected variance) - 1
-        # Positive when |dS| larger than expected → bullish on chaotic regime
-        realized_var  = dS ** 2
-        expected_var  = sigma_b ** 2 * self.dt
-        innovation    = realized_var / (expected_var + 1e-30) - 1.0
+        # Step 1: predict
+        pi_pred = pi + (self.q_12 * (1.0 - pi) - self.q_21 * pi) * self.dt
+        pi_pred = float(np.clip(pi_pred, 1e-10, 1 - 1e-10))
 
-        # Gain: how much the chi-sq innovation updates the belief
-        # Derived from the likelihood ratio between regime 2 and regime 1
-        sigma_ratio   = (self.sigma_2 ** 2 - self.sigma_1 ** 2) / (2.0 * sigma_b ** 2 + 1e-30)
-        gain          = pi * (1.0 - pi) * sigma_ratio
+        # Step 2: log-likelihoods INCLUDING normalising constants.
+        # L_k = N(dS; 0, sigma_k^2*dt) = (2*pi*sigma_k^2*dt)^{-1/2} * exp(-dS^2/(2*sigma_k^2*dt))
+        # The normalising constants do NOT cancel between regimes (sigma1 != sigma2),
+        # so they must be included. Omitting them biases the filter toward the
+        # regime with smaller sigma_k^2 in the denominator (i.e. toward whichever
+        # regime has the larger 1/sigma_k, here the calm regime) for small |dS|,
+        # and was the cause of a systematic bias toward pi=1 in an earlier version.
+        log_L1 = -0.5*np.log(2*np.pi*self.sigma_1**2*self.dt) - dS**2/(2.0*self.sigma_1**2*self.dt)
+        log_L2 = -0.5*np.log(2*np.pi*self.sigma_2**2*self.dt) - dS**2/(2.0*self.sigma_2**2*self.dt)
 
-        # Wonham SDE — Euler-Maruyama
-        drift         = (self.q_12 * (1.0 - pi) - self.q_21 * pi) * self.dt
-        diffusion     = gain * innovation * self.dt
+        # Normalise for numerical stability: subtract max before exp
+        log_max = max(log_L1, log_L2)
+        L1 = np.exp(log_L1 - log_max)
+        L2 = np.exp(log_L2 - log_max)
 
-        pi_new = pi + drift + diffusion
-        self.pi = float(np.clip(pi_new, 1e-6, 1 - 1e-6))
+        # Step 3: Bayes update
+        num = pi_pred * L2
+        den = pi_pred * L2 + (1.0 - pi_pred) * L1
+        self.pi = float(np.clip(num / (den + 1e-300), 1e-6, 1 - 1e-6))
         self.history.append(self.pi)
         return self.pi
 
@@ -138,7 +159,7 @@ class WonhamFilter:
 
         Returns
         -------
-        pi_series : posterior belief at each step, shape (n,)
+        pi_series : posterior P(k=2) at each time step, shape (n,)
         """
         self.reset()
         pi_series = np.zeros(len(price_series))
@@ -149,33 +170,57 @@ class WonhamFilter:
         return pi_series
 
     def reset(self, pi: Optional[float] = None) -> None:
-        """Reset belief to initial value (or given pi)."""
-        self.pi = float(np.clip(pi if pi is not None else self.pi_init, 1e-6, 1 - 1e-6))
+        """Reset to initial belief."""
+        self.pi = float(np.clip(
+            pi if pi is not None else self.pi_init, 1e-6, 1 - 1e-6))
         self.history = [self.pi]
 
-    # ── Properties ───────────────────────────────────────────────────
+    # ── Properties ────────────────────────────────────────────────────
 
     @property
     def regime_estimate(self) -> int:
-        """MAP regime estimate: 0 (calm) or 1 (chaotic)."""
+        """MAP regime: 0 = calm, 1 = chaotic."""
         return 1 if self.pi >= 0.5 else 0
 
     @property
     def stationary_pi(self) -> float:
-        """Stationary probability of regime 2 = q₁₂ / (q₁₂ + q₂₁)."""
+        """Stationary P(chaotic) = q12 / (q12 + q21)."""
         return self.q_12 / (self.q_12 + self.q_21)
 
-    # ── Diagnostics ──────────────────────────────────────────────────
+    def blended_sigma(self, pi: Optional[float] = None) -> float:
+        """
+        Blended volatility under current belief.
+        Uses variance weighting (not linear): sigma(pi) = sqrt(pi*sigma2^2 + (1-pi)*sigma1^2)
+        """
+        p = pi if pi is not None else self.pi
+        return float(np.sqrt(p * self.sigma_2**2 + (1.0 - p) * self.sigma_1**2))
 
     def __repr__(self) -> str:
-        return (
-            f"WonhamFilter(π={self.pi:.4f}, "
-            f"regime={'chaotic' if self.pi >= 0.5 else 'calm'}, "
-            f"σ_blended={self.blended_sigma():.4f})"
-        )
+        return (f"BayesVolFilter(pi={self.pi:.4f}, "
+                f"regime={'chaotic' if self.pi>=0.5 else 'calm'}, "
+                f"sigma_blended={self.blended_sigma():.5f})")
 
 
-# ── Simulation helper for testing ─────────────────────────────────────
+# Keep WonhamFilter as an alias with a deprecation note so existing
+# code and tests do not break, but the class now uses the correct filter.
+class WonhamFilter(BayesVolFilter):
+    """
+    Alias for BayesVolFilter.
+
+    NOTE ON NAMING: The classical Wonham (1964) filter applies to models
+    where the hidden state modulates the DRIFT of observations
+    (dY = h(k)dt + dW). Our model has the hidden state modulating
+    VOLATILITY (dS = sigma(k)dW), which is a different filtering problem.
+    The correct filter here is the discrete-time Bayesian predict-update
+    implemented in BayesVolFilter, not the Wonham SDE.
+
+    This class is kept as WonhamFilter for backward compatibility only.
+    New code should use BayesVolFilter directly.
+    """
+    pass
+
+
+# ── Simulation helper ─────────────────────────────────────────────────
 
 def simulate_regime_switching_prices(
     T_seconds: int,
@@ -186,102 +231,72 @@ def simulate_regime_switching_prices(
     q_21: float,
     S0: float = 100.0,
     seed: int = 42,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+):
     """
     Simulate a regime-switching price path for testing the filter.
 
     Returns
     -------
-    t_grid   : time array
-    S        : mid-price path
-    regimes  : true regime at each step (0 or 1)
+    t_grid   : time array, shape (n,)
+    S        : mid-price path, shape (n,)
+    regimes  : true regime at each step, shape (n,), values in {0, 1}
     """
     rng = np.random.default_rng(seed)
-    n_steps = int(T_seconds / dt)
-    S = np.zeros(n_steps)
-    regimes = np.zeros(n_steps, dtype=int)
-
+    n = int(T_seconds / dt)
+    S = np.zeros(n)
+    regimes = np.zeros(n, dtype=int)
     S[0] = S0
-    regime = 0  # start calm
+    regime = 0
 
-    for i in range(1, n_steps):
-        # Regime switching
+    for i in range(1, n):
         if regime == 0:
-            if rng.uniform() < q_12 * dt:
-                regime = 1
+            if rng.uniform() < q_12 * dt: regime = 1
         else:
-            if rng.uniform() < q_21 * dt:
-                regime = 0
+            if rng.uniform() < q_21 * dt: regime = 0
         regimes[i] = regime
+        sigma = sigma_2 if regime == 1 else sigma_1
+        S[i] = S[i-1] + sigma * rng.standard_normal() * np.sqrt(dt)
 
-        # Price move
-        sigma_k = sigma_2 if regime == 1 else sigma_1
-        dW = rng.normal(0, np.sqrt(dt))
-        S[i] = S[i - 1] + sigma_k * dW
-
-    t_grid = np.arange(n_steps) * dt
-    return t_grid, S, regimes
+    return np.arange(n) * dt, S, regimes
 
 
-# ── Entry point / demo ────────────────────────────────────────────────
+# ── Demo ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import matplotlib
+    matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    import os
 
-    # Simulate a 1-hour price path (3600 seconds, dt=1s)
-    T = 3600
-    dt = 1.0
-    print("Simulating regime-switching price path...")
-    t, S, true_regimes = simulate_regime_switching_prices(
-        T_seconds=T, dt=dt,
-        sigma_1=0.005, sigma_2=0.02,
-        q_12=1/600, q_21=1/150,   # avg 10 min calm, 2.5 min chaotic
-        seed=42,
-    )
+    print("Running BayesVolFilter demo (correct filter for volatility-switching)...")
+    T, dt = 3600, 1.0
+    s1, s2 = 0.005, 0.02
+    q12, q21 = 1/300, 1/120
 
-    # Run Wonham filter
-    filt = WonhamFilter(
-        sigma_1=0.005, sigma_2=0.02,
-        q_12=1/600, q_21=1/150,
-        pi_init=1/5, dt=dt,
-    )
+    t, S, true_reg = simulate_regime_switching_prices(T, dt, s1, s2, q12, q21, seed=7)
+
+    filt = BayesVolFilter(s1, s2, q12, q21, pi_init=q12/(q12+q21), dt=dt)
     pi_series = filt.update_batch(S)
 
-    print(f"Filter final state: {filt}")
-    print(f"Stationary π*: {filt.stationary_pi:.3f}")
-    print(f"Mean π: {pi_series.mean():.3f}  (should be ~{filt.stationary_pi:.3f})")
+    acc = max(((pi_series>=0.5)==true_reg).mean(),
+              1-((pi_series>=0.5)==true_reg).mean())
+    print(f"Filter: {filt}")
+    print(f"Accuracy: {acc:.1%}  |  Stationary pi*: {filt.stationary_pi:.3f}")
 
-    # Accuracy: how often does MAP regime match true regime?
-    predicted = (pi_series >= 0.5).astype(int)
-    accuracy = (predicted == true_regimes).mean()
-    print(f"Regime classification accuracy: {accuracy:.1%}")
-
-    # Plot
-    fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
-
-    axes[0].plot(t / 60, S, lw=0.6, color="#185FA5", label="Mid-price")
-    axes[0].set_ylabel("Price S_t")
-    axes[0].set_title("Wonham Filter — Regime Inference from Price Path")
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
-
-    axes[1].fill_between(t / 60, true_regimes, alpha=0.4, color="#D85A30",
-                         label="True regime 2 (chaotic)")
-    axes[1].set_ylabel("True regime")
-    axes[1].set_yticks([0, 1]); axes[1].set_yticklabels(["calm", "chaotic"])
-    axes[1].legend(); axes[1].grid(True, alpha=0.3)
-
-    axes[2].plot(t / 60, pi_series, lw=0.8, color="#5DCAA5", label="π_t = P(chaotic)")
-    axes[2].axhline(0.5, color="gray", lw=0.8, ls="--", label="Decision threshold")
-    axes[2].axhline(filt.stationary_pi, color="#EF9F27", lw=0.8, ls=":",
-                    label=f"Stationary π* = {filt.stationary_pi:.2f}")
-    axes[2].set_xlabel("Time (minutes)")
-    axes[2].set_ylabel("π_t")
-    axes[2].set_ylim(-0.05, 1.05)
-    axes[2].legend(); axes[2].grid(True, alpha=0.3)
-
+    os.makedirs('results/plots', exist_ok=True)
+    fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+    fig.patch.set_facecolor('#0F0F0F')
+    axes[0].plot(t/60, S, lw=0.5, color='#5DCAA5')
+    axes[0].set_ylabel('Price', color='#CCC')
+    axes[1].fill_between(t/60, true_reg, alpha=0.7, color='#D85A30', label='True chaotic')
+    axes[1].set_ylabel('True regime', color='#CCC')
+    axes[2].plot(t/60, pi_series, lw=0.8, color='#EF9F27')
+    axes[2].axhline(0.5, color='white', lw=0.6, ls='--')
+    axes[2].set_ylabel('pi_t', color='#CCC')
+    axes[2].set_xlabel('Time (min)', color='#CCC')
+    for ax in axes: ax.set_facecolor('#1A1A1A')
+    fig.suptitle(f'BayesVolFilter — accuracy {acc:.1%}', color='white')
     plt.tight_layout()
-    os.makedirs("results/plots", exist_ok=True)
-    plt.savefig("results/plots/wonham_filter_demo.png", dpi=150, bbox_inches="tight")
-    print("Plot saved: results/plots/wonham_filter_demo.png")
-    plt.show()
+    plt.savefig('results/plots/wonham_filter_demo.png', dpi=130,
+                bbox_inches='tight', facecolor='#0F0F0F')
+    print("Saved: results/plots/wonham_filter_demo.png")

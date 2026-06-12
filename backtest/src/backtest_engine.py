@@ -71,7 +71,15 @@ def run_agent(agent_type, S, regimes, cfg, rng, spread_table=None, hmm_filter=No
     """
     Simulate one agent on a given price/regime path.
 
-    agent_type: "regime" | "naive" | "fixed"
+    agent_type:
+      "oracle" - CLAIVOYANT ORACLE: uses the TRUE hidden regime k_t directly
+                 to pick sigma_k each step. NOT implementable in practice
+                 (regime is hidden) - this is an upper-bound benchmark only.
+      "hmm"    - uses the Bayesian filter's belief pi_t (no access to true k_t),
+                 blending sigma via sqrt(pi*sigma2^2+(1-pi)*sigma1^2). This is
+                 the practically implementable regime-aware agent.
+      "naive"  - constant blended sigma (RMS-weighted by stationary P(regime)).
+      "fixed"  - constant symmetric spread 1/kappa.
     Returns (pnl_series, inv_series, spread_earned, n_trades)
     """
     n  = cfg["order_flow"]
@@ -86,9 +94,13 @@ def run_agent(agent_type, S, regimes, cfg, rng, spread_table=None, hmm_filter=No
     dt     = t_cfg["dt_pde"]
     n_steps = len(S)
 
-    # For naive: average sigma weighted by stationary distribution
+    # For naive: RMS (variance-weighted) blend by stationary distribution.
+    # Using the linear blend (1-pi)*s1+pi*s2 understates volatility by Jensen's
+    # inequality and is inconsistent with the RMS blend used by the HMM filter
+    # (hmm_filter/src/wonham_filter.py: blended_sigma). RMS used here for
+    # consistency between the "naive" and "hmm" agents' volatility inputs.
     pi_star   = r["q_12"] / (r["q_12"] + r["q_21"])
-    sigma_avg = (1 - pi_star) * r["sigma_1"] + pi_star * r["sigma_2"]
+    sigma_avg = np.sqrt((1 - pi_star) * r["sigma_1"]**2 + pi_star * r["sigma_2"]**2)
 
     # Arrival rates per regime
     A = [n["A_1"], n["A_2"]]
@@ -115,14 +127,17 @@ def run_agent(agent_type, S, regimes, cfg, rng, spread_table=None, hmm_filter=No
             continue
 
         # Get spreads based on agent type
-        if agent_type == "regime":
+        if agent_type == "oracle":
+            # CLAIRVOYANT: uses true k_t. Upper-bound benchmark, not implementable.
             sigma_k = r["sigma_2"] if k == 1 else r["sigma_1"]
             da, db  = optimal_spread_approx(q, tau, sigma_k, gamma, kappa, q_max)
 
         elif agent_type == "hmm":
+            # Practical regime-aware agent: infers pi_t from price increments only.
             dS = S[i] - S[i - 1]
             pi = hmm_filter.update(dS)
-            da, db = spread_table.lookup_blended(q, t, pi)
+            sigma_blend = np.sqrt(pi*r["sigma_2"]**2 + (1-pi)*r["sigma_1"]**2)
+            da, db = optimal_spread_approx(q, tau, sigma_blend, gamma, kappa, q_max)
 
         elif agent_type == "naive":
             da, db = optimal_spread_approx(q, tau, sigma_avg, gamma, kappa, q_max)
@@ -130,26 +145,40 @@ def run_agent(agent_type, S, regimes, cfg, rng, spread_table=None, hmm_filter=No
         else:  # fixed
             da, db = 0.5, 0.5
 
-        # Poisson arrivals
+        # Poisson arrivals (exact form 1-exp(-lam*dt), not the lam*dt approximation)
         A_k    = A[k]
-        rate_a = A_k * np.exp(-kappa * da) * dt
-        rate_b = A_k * np.exp(-kappa * db) * dt
+        rate_a = 1.0 - np.exp(-A_k * np.exp(-kappa * da) * dt)
+        rate_b = 1.0 - np.exp(-A_k * np.exp(-kappa * db) * dt)
 
         ask_hit = rng.uniform() < rate_a
         bid_hit = rng.uniform() < rate_b
+
+        # Adverse selection: with regime-dependent probability, an informed
+        # trader hits the quote and the price moves against the MM by
+        # alpha * spread (see README "Adverse Selection Model" / configs
+        # adv_selection block). Applied identically to all agent types so
+        # the comparison isolates the *spread-setting policy*, not exposure.
+        adv = cfg.get("adv_selection", {})
+        alpha   = adv.get("alpha", 0.0)
+        p_inf_k = adv.get("p_informed_calm", 0.0) if k == 0 else adv.get("p_informed_chaotic", 0.0)
 
         if ask_hit:
             cash    += mid + da
             q       -= 1
             spread_earned += da
             n_trades += 1
+            if alpha > 0 and rng.uniform() < p_inf_k:
+                S[i] += alpha * da   # informed buy -> price moves up against MM
 
         if bid_hit and abs(q) < q_max:
             cash    -= mid - db
             q       += 1
             spread_earned += db
             n_trades += 1
+            if alpha > 0 and rng.uniform() < p_inf_k:
+                S[i] -= alpha * db   # informed sell -> price moves down against MM
 
+        mid = S[i]  # reflect any adverse-selection move in this step's mark
         pnl_series.append(cash + q * mid)
         inv_series.append(q)
 
@@ -194,8 +223,9 @@ def run_backtest(cfg_path: str, results_dir: str = "results") -> None:
         dt=dt,
     )
 
-    agent_types = ["regime", "naive", "fixed"]
-    agent_names = ["Regime-Switching", "Naive-ConstantVol", "SymmetricFixed"]
+    agent_types = ["oracle", "hmm", "naive", "fixed"]
+    agent_names = ["Oracle (true regime)", "HMM-Filter (Bayesian, hidden regime)",
+                   "Naive-ConstantVol", "SymmetricFixed"]
 
     # Collect results
     all_pnl       = {a: [] for a in agent_types}
@@ -211,7 +241,10 @@ def run_backtest(cfg_path: str, results_dir: str = "results") -> None:
 
         for atype in agent_types:
             pnl_s, inv_s, sp, nt = run_agent(
-                atype, S, regimes, cfg, rng,
+                # Issue K: pass a copy - adverse-selection mutates S in place,
+                # which would otherwise contaminate later agents with earlier
+                # agents' price impact and create order-dependent results.
+                atype, S.copy(), regimes, cfg, rng,
                 spread_table=spread_table,
                 hmm_filter=hmm if atype == "hmm" else None,
             )

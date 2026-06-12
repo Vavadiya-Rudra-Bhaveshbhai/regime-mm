@@ -118,12 +118,17 @@ def print_comparison_table(metrics_list: list[AgentMetrics]) -> None:
         )
     print("=" * len(header))
 
-    # Highlight improvement of regime-switching agent over naive
-    if len(metrics_list) >= 2:
-        rs = metrics_list[0]
-        naive = metrics_list[1]
-        sharpe_improvement = (rs.sharpe_ratio - naive.sharpe_ratio) / (abs(naive.sharpe_ratio) + 1e-12) * 100
-        inv_reduction = (naive.max_inventory - rs.max_inventory) / (naive.max_inventory + 1e-12) * 100
-        print(f"\n  Regime-switching vs Naive:")
-        print(f"    Sharpe improvement : {sharpe_improvement:+.1f}%")
-        print(f"    Inventory reduction: {inv_reduction:+.1f}%")
+    # Highlight HMM (practical, hidden-regime) agent vs Naive and vs Oracle
+    by_name = {m.name: m for m in metrics_list}
+    naive = by_name.get("Naive-ConstantVol")
+    hmm   = by_name.get("HMM-Filter (Bayesian, hidden regime)")
+    oracle = by_name.get("Oracle (true regime)")
+    if naive and hmm:
+        sharpe_imp = (hmm.sharpe_ratio - naive.sharpe_ratio)/(abs(naive.sharpe_ratio)+1e-12)*100
+        inv_red    = (naive.max_inventory - hmm.max_inventory)/(naive.max_inventory+1e-12)*100
+        print(f"\n  HMM-Filter vs Naive:")
+        print(f"    Sharpe improvement : {sharpe_imp:+.1f}%")
+        print(f"    Inventory reduction: {inv_red:+.1f}%")
+    if oracle and hmm:
+        gap = (oracle.sharpe_ratio - hmm.sharpe_ratio)/(abs(oracle.sharpe_ratio)+1e-12)*100
+        print(f"  HMM-Filter vs Oracle (true regime) Sharpe gap: {gap:+.1f}%")
